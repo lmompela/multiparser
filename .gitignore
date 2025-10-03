@@ -1,3 +1,8 @@
+
+logs/
+models/
+predictions/
+
 # data files
 data
 

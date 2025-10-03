@@ -13,7 +13,20 @@ from supar.utils.logging import init_logger, logger
 from supar.utils.metric import Metric
 from supar.utils.parallel import DistributedDataParallel as DDP
 from supar.utils.parallel import is_master
-
+from pathlib import PosixPath
+from supar.utils.transform import CoNLL
+from supar.utils.field import Field
+from  supar.utils.vocab import Vocab
+from supar.utils.field import SubwordField
+from builtins import getattr
+# Allow safe loading
+torch.serialization.add_safe_globals([Config])
+torch.serialization.add_safe_globals([PosixPath])
+torch.serialization.add_safe_globals([CoNLL])
+torch.serialization.add_safe_globals([Field])
+torch.serialization.add_safe_globals([Vocab])
+torch.serialization.add_safe_globals([SubwordField])
+torch.serialization.add_safe_globals([getattr])
 
 class Parser(abc.ABC):
 

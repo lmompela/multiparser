@@ -61,6 +61,9 @@ class Dataset(torch.utils.data.Dataset):
             yield d[index]
 
     def __getattr__(self, name):
+        # Bypass special (dunder) attributes
+        if name.startswith('__') and name.endswith('__'):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
         if name in self.__dict__:
             return self.__dict__[name]
         return [getattr(sentence, name) for sentence in self.sentences]
