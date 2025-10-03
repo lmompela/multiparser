@@ -1,0 +1,42 @@
+#!/bin/bash
+set -e
+source ../supar_creole/supar_venv/bin/activate
+
+mkdir -p logs/mtl_hc_baseline
+
+declare -A models
+models=(
+  [roberta]="roberta-large"
+  [camembert1]="camembert-base"
+  [camembert2]="almanach/camembertv2-base"
+  [creoleval]="lgrobol/xlm-r-CreoleEval_all"
+)
+
+for model in "${!models[@]}"; do
+  echo "🚀 Launching MTL 3xhc for $model..."
+
+  python3 -m supar.cmds.multi_parser train -b -d \
+    -c config2.ini \
+    -p models/mtl_hc_baseline/${model}/ \
+    --train \
+      ../supar_creole/data/hc/seed1/hc_train_seed1.conllu \
+      ../supar_creole/data/hc/seed2/hc_train_seed2.conllu \
+      ../supar_creole/data/hc/seed3/hc_train_seed3.conllu \
+    --dev \
+      ../supar_creole/data/hc/seed1/hc_dev_seed1.conllu \
+      ../supar_creole/data/hc/seed2/hc_dev_seed2.conllu \
+      ../supar_creole/data/hc/seed3/hc_dev_seed3.conllu \
+    --test \
+      ../supar_creole/data/hc/hc_original_split_test.conllu \
+      ../supar_creole/data/hc/hc_original_split_test.conllu \
+      ../supar_creole/data/hc/hc_original_split_test.conllu \
+    --task-names \
+      hc_baseline_seed1 hc_baseline_seed2 hc_baseline_seed3 \
+    --embed embeddings/cc.ht.100.vec \
+    --bert "${models[$model]}" --tree \
+    2>&1 | tee logs/mtl_hc_baseline/${model}_hc_baseline.log
+
+  echo "✅ Finished $model"
+done
+
+echo "🎉 All 3xhc MTL training complete!"
