@@ -42,3 +42,11 @@ __pycache__
 
 # vscode
 .vscode
+
+# Embeddings (too large for GitHub)
+embeddings/*.vec
+embeddings/*.bin
+
+# Process documentation
+REFACTORING_PLAN.md
+REFACTORING_COMPLETE.md
