@@ -137,19 +137,3 @@ python run.py evaluate \
   --gold gold.conllu \
   --pred predictions/test_pred.conllu
 ```
-
-## Migration from Shell Scripts
-
-**Old way:**
-```bash
-./run_training_hc_baseline_enhanced.sh
-./run_training_hc+mc_enhanced.sh
-./run_training_mcxhc_enhanced.sh
-```
-
-**New way:**
-```bash
-python run.py train --mode baseline --language hc
-python run.py train --mode concatenated --language hc+mc
-python run.py train --mode multitask --languages mc,hc
-```
