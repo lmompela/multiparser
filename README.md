@@ -153,21 +153,3 @@ python run.py train --mode baseline --language hc
 python run.py train --mode concatenated --language hc+mc
 python run.py train --mode multitask --languages mc,hc
 ```
-
-## Citation
-
-```bibtex
-@InProceedings{alisayyed:dakota:2021,
-  author    = {Ali Syed, Hatem and Dakota, Daniel and Kübler, Sandra},
-  title     = {Exploring Constituency and Multi-Task Parsers for Low-Resource Languages},
-  booktitle = {Proceedings of the 17th International Conference on Parsing Technologies (IWPT)},
-  year      = {2021},
-  pages     = {54--60}
-}
-```
-
-## License
-
-MIT License
-
-For detailed documentation, see `python run.py --help` or [README.backup.md](README.backup.md) for upstream documentation.
