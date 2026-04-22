@@ -1,7 +1,8 @@
 
 logs/
-models/
+/models/
 predictions/
+predictions
 
 # data files
 data
@@ -24,11 +25,16 @@ dist
 *.egg-info
 
 # experimental results
-exp
+results/
+models
 
 # log files
 *.log
 slurm_logs
+
+# Local research notes (do not publish)
+experiment_log.md
+phase4_commands.txt
 
 # pycache
 __pycache__
@@ -44,9 +50,20 @@ __pycache__
 .vscode
 
 # Embeddings (too large for GitHub)
+embeddings/
 embeddings/*.vec
 embeddings/*.bin
 
 # Process documentation
 REFACTORING_PLAN.md
 REFACTORING_COMPLETE.md
+
+# Embedding files — too large for git
+embeddings/*.vec
+embeddings/*.txt
+embeddings/*.bin
+embeddings/*.bin.gz
+
+# accidental shell-output files
+--seeds
+python3

@@ -15,14 +15,22 @@ def parse(parser):
     parser.add_argument('--device', '-d', default='-1', help='ID of GPU to use')
     parser.add_argument('--seed', '-s', default=1, type=int, help='seed for generating random numbers')
     parser.add_argument('--threads', '-t', default=16, type=int, help='max num of threads')
-    parser.add_argument('--batch-size', default=5000, type=int, help='batch size')
+    parser.add_argument('--batch-size', default=None, type=int, help='batch size (overrides config file if set)')
     parser.add_argument("--local_rank", type=int, default=-1, help='node rank for distributed training')
     parser.add_argument('--epochs', default=5000, type=int, help='epochs')
     parser.add_argument("--patience", type=int, default=100, help='Patience for early stopping')
-    parser.add_argument("-lr", type=float, default=2e-3, help="Learning rate")
+    parser.add_argument("-lr", type=float, default=None, help="Learning rate (overrides config file if set)")
     args, unknown = parser.parse_known_args()
     args, _ = parser.parse_known_args(unknown, args)
-    args = Config(**vars(args))
+    args_dict = vars(args)
+    # Config.__init__ reads the ini file first, then applies **kwargs.
+    # None values from argparse defaults silently overwrite ini values
+    # (e.g. lr=5e-5, batch_size=64 for bert-enc). Drop them so the ini wins.
+    # Explicit CLI values are non-None and will still override the ini.
+    for _key in ('lr', 'batch_size'):
+        if args_dict.get(_key) is None:
+            args_dict.pop(_key, None)
+    args = Config(**args_dict)
     Parser = args.pop('Parser')
 
     # This code ensure that all experiment related files are present in a 

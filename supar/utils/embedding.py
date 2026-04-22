@@ -32,8 +32,15 @@ class Embedding(object):
     def load(cls, path, unk=None):
         with open(path, 'r') as f:
             lines = [line for line in f]
-        splits = [line.split() for line in lines]
+
+        # Auto-detect and skip fastText header line (format: "vocab_size dim")
+        start = 0
+        first = lines[0].strip().split()
+        if len(first) == 2 and all(tok.isdigit() for tok in first):
+            start = 1
+
+        splits = [line.split() for line in lines[start:]]
         tokens, vectors = zip(*[(s[0], list(map(float, s[1:])))
-                                for s in splits])
+                                 for s in splits if len(s) > 1])
 
         return cls(tokens, vectors, unk=unk)

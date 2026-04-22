@@ -49,7 +49,16 @@ class MultiTaskParser(Parser):
         self.optimizer = MultiTaskOptimizer(self.model, args.task_names,
                                             args.optimizer_type, lr, args.mu,
                                             args.nu, args.epsilon)
-        self.scheduler = MultiTaskScheduler(self.optimizer, **args)
+
+        # For bert-enc: use LinearLR + nu=0.999 to match supar_creole training dynamics.
+        # ExponentialLR (default) is appropriate for LSTM but causes too-slow LR decay
+        # for fine-tuned BERT on small datasets, making it incomparable to supar_creole.
+        if getattr(self.model.args, 'encoder', 'lstm') == 'bert':
+            total_steps = len(train_loader) * args.epochs
+            self.scheduler = MultiTaskScheduler(self.optimizer, scheduler_type='linear',
+                                                steps=total_steps, **args)
+        else:
+            self.scheduler = MultiTaskScheduler(self.optimizer, **args)
 
         elapsed = timedelta()
         best_e = {tname: 1 for tname in task_names}
@@ -369,14 +378,15 @@ class MultiBiaffineDependencyParser(MultiTaskParser):
         super().__init__(args, model, transforms)
         transform = transforms[0]
         self.WORD, self.CHAR, self.BERT = transform.FORM
-        # if self.args.feat in ('char', 'bert'): #new
-        #     self.WORD, self.FEAT = transform.FORM
-        # else:
-        #     self.WORD, self.FEAT = transform.FORM, transform.CPOS
         self.ARC, self.REL = transform.HEAD, [t.DEPREL for t in transforms]
-        self.puncts = torch.tensor([
-            i for s, i in self.WORD.vocab.stoi.items() if ispunct(s)
-        ]).to(self.args.device)
+        if self.args.encoder == 'bert':
+            # For bert-enc, WORD is a SubwordField with tokenizer vocab (plain dict).
+            # Punctuation filtering via word vocab indices doesn't apply.
+            self.puncts = torch.tensor([]).to(self.args.device)
+        else:
+            self.puncts = torch.tensor([
+                i for s, i in self.WORD.vocab.stoi.items() if ispunct(s)
+            ]).to(self.args.device)
 
     def train(self, train, dev, test, buckets=32, batch_size=5000, punct=False,
               tree=False, proj=False, partial=False, verbose=True, **kwargs):
@@ -390,6 +400,13 @@ class MultiBiaffineDependencyParser(MultiTaskParser):
                 tree=True, proj=False, verbose=True, **kwargs):
         return super().predict(**Config().update(locals()))
 
+    def _get_mask(self, words):
+        """Compute token mask, handling both 2D (lstm) and 3D (bert-enc) word tensors."""
+        if words.dim() == 3:
+            # bert-enc: words is [batch, seq_len, fix_len] subword IDs
+            return words[:, :, 0].ne(self.WORD.pad_index)
+        return words.ne(self.WORD.pad_index)
+
     def _separate_train(self, loader, train_mode='train'):
         self.model.train()
         bar, metric = progress_bar(loader), AttachmentMetric()
@@ -399,7 +416,7 @@ class MultiBiaffineDependencyParser(MultiTaskParser):
             self.scheduler.set_mode(task_name, train_mode)
 
             self.optimizer.zero_grad()
-            mask = words.ne(self.WORD.pad_index)
+            mask = self._get_mask(words)
             # ignore the first token of each sentence
             mask[:, 0] = 0
             s_arc, s_rel = self.model(words, feats, task_name)
@@ -415,7 +432,7 @@ class MultiBiaffineDependencyParser(MultiTaskParser):
             if self.args.partial:
                 mask &= arcs.ge(0)
             # ignore all punctuation if not specified
-            if not self.args.punct:
+            if not self.args.punct and len(self.puncts) > 0 and words.dim() == 2:
                 mask &= words.unsqueeze(-1).ne(self.puncts).all(-1)
             metric(arc_preds, rel_preds, arcs, rels, mask)
             bar.set_postfix_str(
@@ -430,7 +447,7 @@ class MultiBiaffineDependencyParser(MultiTaskParser):
         for inputs, targets in bar:
             words, *feats = inputs.values()
             self.optimizer.zero_grad()
-            mask = words.ne(self.WORD.pad_index)
+            mask = self._get_mask(words)
             # ignore the first token of each sentence
             mask[:, 0] = 0
             shared_out = self.model.shared_forward(words, feats)
@@ -458,7 +475,7 @@ class MultiBiaffineDependencyParser(MultiTaskParser):
                 if self.args.partial:
                     mask &= arcs.ge(0)
                 # ignore all punctuation if not specified
-                if not self.args.punct:
+                if not self.args.punct and len(self.puncts) > 0 and words.dim() == 2:
                     mask &= words.unsqueeze(-1).ne(self.puncts).all(-1)
                 metric(arc_preds, rel_preds, arcs, rels, mask)
 
@@ -481,7 +498,7 @@ class MultiBiaffineDependencyParser(MultiTaskParser):
             return total_loss, metric
 
         for words, *feats, arcs, rels in loader:
-            mask = words.ne(self.WORD.pad_index)
+            mask = self._get_mask(words)
             # ignore the first token of each sentence
             mask[:, 0] = 0
             s_arc, s_rel = self.model(words, feats, task_name)
@@ -493,7 +510,7 @@ class MultiBiaffineDependencyParser(MultiTaskParser):
             if self.args.partial:
                 mask &= arcs.ge(0)
             # ignore all punctuation if not specified
-            if not self.args.punct:
+            if not self.args.punct and len(self.puncts) > 0 and words.dim() == 2:
                 mask &= words.unsqueeze(-1).ne(self.puncts).all(-1)
             total_loss += loss.item()
             metric(arc_preds, rel_preds, arcs, rels, mask)
@@ -511,7 +528,7 @@ class MultiBiaffineDependencyParser(MultiTaskParser):
         preds = {}
         arcs, rels, probs = [], [], []
         for words, *feats in progress_bar(loader):
-            mask = words.ne(self.WORD.pad_index)
+            mask = self._get_mask(words)
             # ignore the first token of each sentence
             mask[:, 0] = 0
             lens = mask.sum(1).tolist()
@@ -537,7 +554,16 @@ class MultiBiaffineDependencyParser(MultiTaskParser):
 
     @classmethod
     def build(cls, path, min_freq=2, fix_len=20, **kwargs):
-        args = Config(**locals())
+        # Extract conf before creating Config so the ini file is actually read.
+        # Without this, conf is buried in **kwargs and Config.__init__(conf=None)
+        # never reads the file -- causing hardcoded train() defaults (lr=2e-3) to
+        # override ini values (lr=5e-5 for bert-enc).
+        conf = kwargs.pop('conf', None)
+        args = Config(conf=conf)
+        # Drop None values injected by argparse defaults (e.g. -lr default=None)
+        # so ini file values take precedence over unset CLI args.
+        kwargs = {k: v for k, v in kwargs.items() if v is not None or k not in ('lr', 'batch_size')}
+        args.update({'path': path, 'min_freq': min_freq, 'fix_len': fix_len, **kwargs})
         args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if os.path.exists(path) and not args.build:
@@ -547,88 +573,111 @@ class MultiBiaffineDependencyParser(MultiTaskParser):
             return parser
 
         logger.info("Building the fields")
-        WORD = Field('words', pad=pad, unk=unk, bos=bos, lower=True)
-        TAG, CHAR, BERT = None, None, None
-        if 'tag' in args.feat:
-            TAG = Field('tags', bos=bos)
-        if 'char' in args.feat:
-            CHAR = SubwordField('chars', pad=pad, unk=unk, bos=bos, fix_len=args.fix_len)
-        if 'bert' in args.feat:
+        if args.encoder == 'bert':
             from transformers import AutoTokenizer
+            from collections import Counter
             tokenizer = AutoTokenizer.from_pretrained(args.bert)
-            BERT = SubwordField('bert',
+            WORD = SubwordField('words',
                                 pad=tokenizer.pad_token,
                                 unk=tokenizer.unk_token,
                                 bos=tokenizer.bos_token or tokenizer.cls_token,
                                 fix_len=args.fix_len,
                                 tokenize=tokenizer.tokenize)
-            BERT.vocab = tokenizer.get_vocab()
-        # if args.feat == 'char':
-        #     FEAT = SubwordField('chars', pad=pad, unk=unk, bos=bos,
-        #                         fix_len=args.fix_len)
-        # elif args.feat == 'bert':
-        #     from transformers import AutoTokenizer
-        #     tokenizer = AutoTokenizer.from_pretrained(args.bert)
-        #     FEAT = SubwordField('bert', pad=tokenizer.pad_token,
-        #                         unk=tokenizer.unk_token, bos=tokenizer.bos_token
-        #                         or tokenizer.cls_token, fix_len=args.fix_len,
-        #                         tokenize=tokenizer.tokenize)
-        #     FEAT.vocab = tokenizer.get_vocab()
-        # else:
-        #     FEAT = Field('tags', bos=bos)
-        ARC = Field('arcs', bos=bos, use_vocab=False, fn=CoNLL.get_arcs)
-        RELS = [Field('rels', bos=bos) for i in range(len(args.task_names))]
+            WORD.vocab = tokenizer.get_vocab()
+            TAG, CHAR, BERT = None, None, None
+            bert_pad_index = WORD.pad_index
 
-        transforms = [CoNLL(FORM=(WORD, CHAR, BERT), POS=TAG, HEAD=ARC, DEPREL=REL) for REL in RELS]
-        # if args.feat in ('char', 'bert'):
-        #     transforms = [
-        #         CoNLL(FORM=(WORD, FEAT), HEAD=ARC, DEPREL=REL) for REL in RELS
-        #     ]
-        # else:
-        #     transforms = [
-        #         CoNLL(FORM=WORD, CPOS=FEAT, HEAD=ARC, DEPREL=REL) for REL in RELS
-        #     ]
+            ARC = Field('arcs', bos=bos, use_vocab=False, fn=CoNLL.get_arcs)
+            RELS = [Field('rels', bos=bos) for i in range(len(args.task_names))]
+            transforms = [CoNLL(FORM=(WORD, CHAR, BERT), POS=TAG, HEAD=ARC, DEPREL=REL) for REL in RELS]
 
-        # HACK for creating a combined train object.
-        # TODO: Think of something better. This is UGLY af
-        train = [
-            Dataset(transform, train_f, **args)
-            for train_f, transform in zip(args.train, transforms)
-        ]
-        combined_train = Dataset(transforms[0], args.train[0], **args)
-        for i in range(1, len(train)):
-            combined_train.sentences += train[i].sentences
+            train = [Dataset(transform, train_f, **args)
+                     for train_f, transform in zip(args.train, transforms)]
+            combined_train = Dataset(transforms[0], args.train[0], **args)
+            for i in range(1, len(train)):
+                combined_train.sentences += train[i].sentences
 
-        WORD.build(combined_train, args.min_freq,
-                   (Embedding.load(args.embed, args.unk) if args.embed else None))
-        if TAG is not None:
-            TAG.build(combined_train)
-        if CHAR is not None:
-            CHAR.build(combined_train)
-        # FEAT.build(combined_train)
+            rel_counters = []
+            for REL, trainD in zip(RELS, train):
+                c = Counter()
+                for s in trainD.sentences:
+                    c.update(s.rels)
+                rel_counters.append(c)
+                REL.build(trainD)
 
-        from collections import Counter
-        rel_counters = []
-        for REL, trainD in zip(RELS, train):
-            c = Counter()
-            for s in trainD.sentences:
-                c.update(s.rels)
-            rel_counters.append(c)
-            REL.build(trainD)
+            args.update({
+                'n_words': len(WORD.vocab),
+                'n_tags': None,
+                'n_chars': None,
+                'char_pad_index': None,
+                'bert_pad_index': bert_pad_index,
+                'n_rels': [len(REL.vocab) for REL in RELS],
+                'pad_index': bert_pad_index,
+                'unk_index': WORD.vocab.get(tokenizer.unk_token, 0),
+                'bos_index': WORD.vocab.get(tokenizer.bos_token or tokenizer.cls_token, 0),
+            })
+            model = cls.MODEL(**args)
+            model.to(args.device)
+            return cls(args, model, transforms)
+        else:
+            WORD = Field('words', pad=pad, unk=unk, bos=bos, lower=True)
+            TAG, CHAR, BERT = None, None, None
+            if 'tag' in args.feat:
+                TAG = Field('tags', bos=bos)
+            if 'char' in args.feat:
+                CHAR = SubwordField('chars', pad=pad, unk=unk, bos=bos, fix_len=args.fix_len)
+            if 'bert' in args.feat:
+                from transformers import AutoTokenizer
+                tokenizer = AutoTokenizer.from_pretrained(args.bert)
+                BERT = SubwordField('bert',
+                                    pad=tokenizer.pad_token,
+                                    unk=tokenizer.unk_token,
+                                    bos=tokenizer.bos_token or tokenizer.cls_token,
+                                    fix_len=args.fix_len,
+                                    tokenize=tokenizer.tokenize)
+                BERT.vocab = tokenizer.get_vocab()
+            ARC = Field('arcs', bos=bos, use_vocab=False, fn=CoNLL.get_arcs)
+            RELS = [Field('rels', bos=bos) for i in range(len(args.task_names))]
 
-        args.update({
-            'n_words': WORD.vocab.n_init,
-            'n_tags': len(TAG.vocab) if TAG is not None else None,
-            'n_chars': len(CHAR.vocab) if CHAR is not None else None,
-            'char_pad_index': CHAR.pad_index if CHAR is not None else None,
-            'bert_pad_index': BERT.pad_index if BERT is not None else None,
-            # 'n_feats': len(FEAT.vocab),
-            'n_rels': [len(REL.vocab) for REL in RELS],
-            'pad_index': WORD.pad_index,
-            'unk_index': WORD.unk_index,
-            'bos_index': WORD.bos_index,
-            # 'feat_pad_index': FEAT.pad_index,
-        })
-        model = cls.MODEL(**args)
-        model.load_pretrained(WORD.embed).to(args.device)
-        return cls(args, model, transforms)
+            transforms = [CoNLL(FORM=(WORD, CHAR, BERT), POS=TAG, HEAD=ARC, DEPREL=REL) for REL in RELS]
+
+            # HACK for creating a combined train object.
+            # TODO: Think of something better. This is UGLY af
+            train = [
+                Dataset(transform, train_f, **args)
+                for train_f, transform in zip(args.train, transforms)
+            ]
+            combined_train = Dataset(transforms[0], args.train[0], **args)
+            for i in range(1, len(train)):
+                combined_train.sentences += train[i].sentences
+
+            WORD.build(combined_train, args.min_freq,
+                       (Embedding.load(args.embed, args.unk) if args.embed else None))
+            if TAG is not None:
+                TAG.build(combined_train)
+            if CHAR is not None:
+                CHAR.build(combined_train)
+
+            from collections import Counter
+            rel_counters = []
+            for REL, trainD in zip(RELS, train):
+                c = Counter()
+                for s in trainD.sentences:
+                    c.update(s.rels)
+                rel_counters.append(c)
+                REL.build(trainD)
+
+            args.update({
+                'n_words': WORD.vocab.n_init,
+                'n_tags': len(TAG.vocab) if TAG is not None else None,
+                'n_chars': len(CHAR.vocab) if CHAR is not None else None,
+                'char_pad_index': CHAR.pad_index if CHAR is not None else None,
+                'bert_pad_index': BERT.pad_index if BERT is not None else None,
+                'n_rels': [len(REL.vocab) for REL in RELS],
+                'pad_index': WORD.pad_index,
+                'unk_index': WORD.unk_index,
+                'bos_index': WORD.bos_index,
+            })
+            model = cls.MODEL(**args)
+            model.load_pretrained(WORD.embed).to(args.device)
+            return cls(args, model, transforms)

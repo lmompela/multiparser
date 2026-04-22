@@ -52,7 +52,12 @@ class BertEmbedding(nn.Module):
         self.pad_index = pad_index
         self.dropout = dropout
         self.requires_grad = requires_grad
-        self.max_len = self.bert.config.max_position_embeddings
+        # XLM-R position IDs start at padding_idx+1=2, so a sequence of length N
+        # uses positions 2..N+1. The embedding table has max_position_embeddings=514
+        # entries (indices 0-513). Safe max is N=512 (positions 2-513).
+        # Using max_position_embeddings directly (514) allows N=513/514 which
+        # accesses indices 515/516 → CUDA assertion srcIndex < srcSelectDimSize.
+        self.max_len = min(self.bert.config.max_position_embeddings - 2, 512)
 
         self.scalar_mix = ScalarMix(self.n_layers, dropout)
         self.projection = nn.Linear(self.hidden_size, self.n_out, False) if self.hidden_size != n_out else nn.Identity()

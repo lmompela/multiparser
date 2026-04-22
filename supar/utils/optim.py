@@ -1,8 +1,40 @@
 from torch.optim import Adam
-from torch.optim.lr_scheduler import ExponentialLR
+from torch.optim.lr_scheduler import ExponentialLR, _LRScheduler
 
 from typing import List, Optional
 from supar.models import MultiBiaffineDependencyModel
+
+
+class PolynomialLR(_LRScheduler):
+    """Linear (or polynomial) LR decay with optional linear warmup.
+    Matches supar_creole's LinearLR used for encoder='bert' training.
+
+    During warmup: LR increases linearly from 0 to base_lr.
+    After warmup:  LR decays as base_lr * (1 - t/T)^power, reaching 0 at step T.
+    """
+
+    def __init__(self, optimizer, warmup_steps: int = 0, steps: int = 100000,
+                 power: float = 1., last_epoch: int = -1):
+        self.warmup_steps = warmup_steps
+        self.steps = steps
+        self.power = power
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        epoch = max(self.last_epoch, 1)
+        if epoch <= self.warmup_steps:
+            return [epoch / self.warmup_steps * lr for lr in self.base_lrs]
+        t = epoch - self.warmup_steps
+        T = self.steps - self.warmup_steps
+        return [lr * (1 - t / T) ** self.power for lr in self.base_lrs]
+
+
+def LinearLR(optimizer, warmup_steps: int = 0, steps: int = 100000,
+             last_epoch: int = -1) -> PolynomialLR:
+    """Linear decay scheduler (warmup_steps=0 means no warmup).
+    Drop-in equivalent to supar_creole's LinearLR for bert-enc training.
+    """
+    return PolynomialLR(optimizer, warmup_steps, steps, 1, last_epoch)
 
 
 class MultiTaskOptimizer():
@@ -71,15 +103,21 @@ class MultiTaskOptimizer():
 class MultiTaskScheduler():
     def __init__(self, optimizer: MultiTaskOptimizer, task_names: List[str],
                  optimizer_type: str, decay: float, decay_steps: float,
+                 scheduler_type: str = 'exponential', steps: int = 0,
                  **kwargs: float) -> None:
         self.sched_type = optimizer_type
+
+        def _make_sched(opt):
+            if scheduler_type == 'linear':
+                return LinearLR(opt, warmup_steps=0, steps=max(steps, 1))
+            return ExponentialLR(opt, decay ** (1 / decay_steps))
+
         if optimizer_type == 'single':
-            self.scheduler = ExponentialLR(optimizer.optimizer,
-                                           decay**(1 / decay_steps))
+            self.scheduler = _make_sched(optimizer.optimizer)
         else:
             self.schedulers = {
-                task_name: ExponentialLR(optimizer, decay**(1 / decay_steps))
-                for task_name, optimizer in optimizer.optimizers.items()
+                task_name: _make_sched(opt)
+                for task_name, opt in optimizer.optimizers.items()
             }
         self.sched_list = []
 
