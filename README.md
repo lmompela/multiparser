@@ -1,139 +1,137 @@
 # Multi-Task Parser for Creole Languages
 
-This repository provides a unified CLI for training multi-task dependency parsers for Creole languages. It's a fork of the [Multi-Task Parser](https://github.com/Jbar-ry/Multi-Task-Parser) which extends [SuPar](https://github.com/yzhangcs/parser).
+Unified CLI for multi-task dependency parsing experiments (fork/extension of SuPar-style biaffine parsing with task-specific heads and a shared encoder).
 
-## Features
+## Training modes
 
-**Three Training Modes:**
+1. `baseline`: one language, multiple seeds treated as separate tasks
+2. `concatenated`: pre-combined datasets per seed (e.g., `hc+mc`)
+3. `multitask`: separate language datasets trained jointly (e.g., `hc,mc` or `fr+hc,fr+mc`)
 
-1. **Baseline**: Single language with multiple seeds (multi-task across seeds)
-2. **Concatenated**: Pre-combined datasets (e.g., HC+MC concatenated before training)
-3. **Multi-Task**: Separate languages with joint optimization (true multi-task learning)
+## Supported language/task codes
 
-**Supported Languages:**
-- Haitian Creole (hc)
-- Martinican Creole (mc)
-- French (fr)
+- `hc`, `mc`, `fr`
+- `hc+mc`, `mc+hc`
+- `fr+hc`, `fr+mc`
 
-**Supported Models:**
-- RoBERTa Large
-- CamemBERT Base
-- CamemBERT v2 Base
-- XLM-R CreoleEval
+## Supported model keys
+
+- `roberta`
+- `camembert`
+- `camembert2`
+- `creoleval`
 
 ## Installation
 
-### 1. Clone the repository
 ```bash
 git clone git@github.com:lmompela/multiparser.git
 cd multiparser
-```
-
-### 2. Install dependencies
-```bash
-# Use existing virtual environment from supar_creole
 source ../supar_creole/supar_venv/bin/activate
-
-# Or create new one
-python3 -m venv venv
-source venv/bin/activate
-pip install -U supar
+pip install -e .
 ```
 
-### 3. Get embeddings (103MB, not in repo)
-```bash
-# Copy from supar_creole if available
-cp ../supar_creole/embeddings/cc.ht.100.vec embeddings/
+If needed, create your own venv and install dependencies as usual.
 
-# Or download FastText embeddings
-cd embeddings
-wget https://dl.fbaipublicfiles.com/fasttext/vectors-crawl/cc.ht.300.bin.gz
-gunzip cc.ht.300.bin.gz
-```
+## Embeddings
 
-## Quick Start
+For LSTM feature configs, embeddings are expected under `embeddings/`:
 
-### Baseline Mode (Single Language, Multi-Seed)
+- `glove` -> `embeddings/glove.6B.100d.txt`
+- `ht-ft` -> `embeddings/cc.ht.100.vec`
+- `fr-ft` -> `embeddings/cc.fr.100.vec`
+- `en-ft` -> `embeddings/cc.en.100.vec`
+- `none` -> random init
 
-Train on Haitian Creole with 3 seeds:
+For `bert-enc`, `--embed-key` is ignored.
+
+## Quick start
+
+### Baseline (single language, multi-seed tasks)
+
 ```bash
 python run.py train \
   --mode baseline \
   --language hc \
-  --model roberta \
+  --model creoleval \
+  --feat-config lstm-tag-char-bert \
+  --embed-key glove \
   --seeds 1,2,3
 ```
 
-### Concatenated Mode (Pre-Combined Data)
+### Concatenated
 
-Train on concatenated HC+MC dataset:
 ```bash
 python run.py train \
   --mode concatenated \
   --language hc+mc \
-  --model roberta \
+  --model creoleval \
+  --feat-config lstm-tag-char-bert \
+  --embed-key glove \
   --seeds 1,2,3
 ```
 
-### Multi-Task Mode (Joint Optimization)
+### True multitask (shared encoder across tasks)
 
-Train on HC and MC jointly (6 tasks: 3 seeds × 2 languages):
 ```bash
 python run.py train \
   --mode multitask \
-  --languages hc,mc \
+  --languages fr+hc,fr+mc \
   --model creoleval \
+  --feat-config bert-enc \
+  --joint-loss \
   --seeds 1,2,3
 ```
 
-## Understanding Training Modes
+## CLI reference
 
-### Baseline Mode
-- **What**: Train on single language with multiple random seeds
-- **How**: Each seed is treated as a separate task
-- **Example**: 3 HC seeds → 3 tasks (`hc_seed1`, `hc_seed2`, `hc_seed3`)
+### `train`
 
-### Concatenated Mode
-- **What**: Train on pre-combined datasets
-- **How**: Datasets are concatenated **before** training
-- **Example**: HC+MC concatenated data → 3 tasks (one per seed of combined data)
-- **Data location**: `../supar_creole/data/hc+mc/`
-
-### Multi-Task Mode
-- **What**: True multi-task learning with separate treebanks
-- **How**: Each language×seed is a separate task, joint optimization
-- **Example**: HC,MC with 3 seeds → 6 tasks (`hc_seed1-3`, `mc_seed1-3`)
-
-## Usage
-
-### Training
 ```bash
-python run.py train --mode {baseline|concatenated|multitask} [OPTIONS]
+python run.py train --mode {baseline,concatenated,multitask} [OPTIONS]
 ```
 
-**Examples:**
-```bash
-# Baseline
-python run.py train --mode baseline --language hc --model roberta
+Key options:
 
-# Concatenated
-python run.py train --mode concatenated --language hc+mc --model camembert
+- `--language` for `baseline|concatenated`
+- `--languages` for `multitask` (comma-separated)
+- `--model {roberta,camembert,camembert2,creoleval}`
+- `--feat-config {bert-enc,lstm-tag-char-bert,lstm-tag-bert,lstm-tag-char,lstm-tag,lstm-char,lstm-bert}`
+- `--embed-key {glove,ht-ft,fr-ft,en-ft,none}`
+- `--seeds 1,2,3`
+- `--config` (default `config2.ini`; auto-switches to `config_bert_enc.ini` for `bert-enc`)
+- `--joint-loss` (recommended for cross-language multitask experiments)
+- `--device`, `--no-log`
 
-# Multi-task
-python run.py train --mode multitask --languages hc,mc --model creoleval
-```
+### `predict`
 
-### Prediction
+`predict` requires a model path, a **task name**, and input/output files:
+
 ```bash
 python run.py predict \
-  --model models/mtl_hc_baseline/roberta \
-  --data test.conllu \
-  --output predictions/test_pred.conllu
+  --model models/fr+hcxfr+mc__creoleval__bert-enc__n-a/fr+hc_seed1.model \
+  --task fr+hc_seed1 \
+  --data ../supar_creole/data/hc/hc_original_split_test.conllu \
+  --output predictions/fr+hc_seed1.conllu
 ```
 
-### Evaluation
+### `evaluate`
+
 ```bash
 python run.py evaluate \
-  --gold gold.conllu \
-  --pred predictions/test_pred.conllu
+  --gold ../supar_creole/data/hc/hc_original_split_test.conllu \
+  --pred predictions/fr+hc_seed1.conllu
 ```
+
+This runs `scripts/conll17_ud_eval.py` and writes a JSON metrics sidecar next to prediction output.
+
+## Output naming convention
+
+- Model directory: `models/{lang_combo}__{model}__{feat_config}__{embed_label}/`
+- Log file: `logs/{lang_combo}/{model}__{feat_config}__{embed_label}.log`
+- Predictions: `predictions/{lang_combo}__{model}__{feat_config}__{embed_label}/{task}.conllu`
+
+Where `lang_combo` is `x`-joined for multitask (e.g., `fr+hcxfr+mc`) and `embed_label` is `n-a` for `bert-enc`.
+
+## License
+
+MIT License
